@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -27,9 +28,11 @@ var (
 	flagInsecure    = flag.Bool("insecure", true, "disable TLS for OTLP gRPC connection")
 	flagServiceName = flag.String("service-name", "tcpstate-logger", "OTel resource service.name")
 	flagStdout      = flag.Bool("stdout", false, "print events to stdout in addition to OTLP export")
+	bootTimeNs      = getBootTimeNs()
 )
 
 func main() {
+	log.Printf("bootTimeNs = %d", bootTimeNs)
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,7 +101,8 @@ func main() {
 func printEvent(ev *bpfEvent) {
 	src := addrString(ev.Saddr[:], ev.Family)
 	dst := addrString(ev.Daddr[:], ev.Family)
-	fmt.Printf("%s[%d] %s:%d -> %s:%d  %s -> %s\n",
+	fmt.Printf("%d %s[%d] %s:%d -> %s:%d  %s -> %s\n",
+		bootTimeNs+int64(ev.TimestampNs),
 		commString(ev.Comm),
 		ev.Pid,
 		src, ev.Sport,
@@ -113,4 +117,13 @@ func addrString(b []byte, family uint16) string {
 		return net.IP(b[:16]).String()
 	}
 	return net.IP(b[:4]).String()
+}
+
+func getBootTimeNs() int64 {
+	var info syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&info); err != nil {
+		panic("syscall.Sysinfo:" + err.Error())
+	}
+	// time.Now() as ns minus uptime as ns = boot time as ns
+	return time.Now().UnixNano() - int64(info.Uptime)*int64(time.Second)
 }

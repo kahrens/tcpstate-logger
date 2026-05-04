@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otlploggrpc "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
@@ -61,7 +61,7 @@ func emitTCPStateEvent(ctx context.Context, logger otellog.Logger, ev *bpfEvent)
 	)
 
 	var r otellog.Record
-	r.SetTimestamp(time.Unix(0, int64(ev.TimestampNs)))
+	r.SetTimestamp(time.Unix(0, bootTimeNs+int64(ev.TimestampNs)))
 	r.SetObservedTimestamp(time.Now())
 	r.SetSeverity(otellog.SeverityInfo)
 	r.SetSeverityText("INFO")
