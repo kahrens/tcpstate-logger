@@ -2,7 +2,7 @@
 
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags linux -type event bpf ./bpf/tcpstate.c -- -I/usr/include/bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -tags linux -type event bpf ./bpf/tcpstate.c -- -I/usr/include/bpf -D__TARGET_ARCH_x86
 
 import (
 	"bytes"
@@ -21,6 +21,12 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+)
+
+const (
+	eventTCPState uint8 = 0
+	eventUDPSend  uint8 = 1
+	eventUDPRecv  uint8 = 2
 )
 
 var (
@@ -65,6 +71,24 @@ func main() {
 	}
 	defer tp.Close()
 
+	kpSend, err := link.Kprobe("udp_sendmsg", objs.HandleUdpSendmsg, nil)
+	if err != nil {
+		log.Fatalf("attaching kprobe udp_sendmsg: %v", err)
+	}
+	defer kpSend.Close()
+
+	kpRecvEntry, err := link.Kprobe("udp_recvmsg", objs.HandleUdpRecvmsg, nil)
+	if err != nil {
+		log.Fatalf("attaching kprobe udp_recvmsg: %v", err)
+	}
+	defer kpRecvEntry.Close()
+
+	kpRecvRet, err := link.Kretprobe("udp_recvmsg", objs.HandleUdpRecvmsgRet, nil)
+	if err != nil {
+		log.Fatalf("attaching kretprobe udp_recvmsg: %v", err)
+	}
+	defer kpRecvRet.Close()
+
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
 		log.Fatalf("opening ring buffer: %v", err)
@@ -75,7 +99,7 @@ func main() {
 		rd.Close()
 	}()
 
-	log.Printf("tracepoint attached, exporting to %s", *flagEndpoint)
+	log.Printf("probes attached, exporting to %s", *flagEndpoint)
 
 	var ev bpfEvent
 	for {
@@ -91,14 +115,22 @@ func main() {
 			log.Printf("parsing event: %v", err)
 			continue
 		}
-		if *flagStdout {
-			printEvent(&ev)
+		switch ev.EventType {
+		case eventTCPState:
+			if *flagStdout {
+				printTCPEvent(&ev)
+			}
+			emitTCPStateEvent(ctx, logger, &ev)
+		case eventUDPSend, eventUDPRecv:
+			if *flagStdout {
+				printUDPEvent(&ev)
+			}
+			emitUDPDatagramEvent(ctx, logger, &ev)
 		}
-		emitTCPStateEvent(ctx, logger, &ev)
 	}
 }
 
-func printEvent(ev *bpfEvent) {
+func printTCPEvent(ev *bpfEvent) {
 	src := addrString(ev.Saddr[:], ev.Family)
 	dst := addrString(ev.Daddr[:], ev.Family)
 	fmt.Printf("%d %s[%d] %s:%d -> %s:%d  %s -> %s\n",
@@ -109,6 +141,24 @@ func printEvent(ev *bpfEvent) {
 		dst, ev.Dport,
 		tcpStateName(ev.Oldstate),
 		tcpStateName(ev.Newstate),
+	)
+}
+
+func printUDPEvent(ev *bpfEvent) {
+	src := addrString(ev.Saddr[:], ev.Family)
+	dst := addrString(ev.Daddr[:], ev.Family)
+	dir := "send"
+	if ev.EventType == eventUDPRecv {
+		dir = "recv"
+	}
+	fmt.Printf("%d %s[%d] %s:%d -> %s:%d  UDP %s %d bytes\n",
+		bootTimeNs+int64(ev.TimestampNs),
+		commString(ev.Comm),
+		ev.Pid,
+		src, ev.Sport,
+		dst, ev.Dport,
+		dir,
+		ev.Datalen,
 	)
 }
 
@@ -124,6 +174,5 @@ func getBootTimeNs() int64 {
 	if err := syscall.Sysinfo(&info); err != nil {
 		panic("syscall.Sysinfo:" + err.Error())
 	}
-	// time.Now() as ns minus uptime as ns = boot time as ns
 	return time.Now().UnixNano() - int64(info.Uptime)*int64(time.Second)
 }

@@ -81,6 +81,48 @@ func emitTCPStateEvent(ctx context.Context, logger otellog.Logger, ev *bpfEvent)
 	logger.Emit(ctx, r)
 }
 
+func emitUDPDatagramEvent(ctx context.Context, logger otellog.Logger, ev *bpfEvent) {
+	src := addrString(ev.Saddr[:], ev.Family)
+	dst := addrString(ev.Daddr[:], ev.Family)
+	comm := commString(ev.Comm)
+
+	dir := "send"
+	localAddr, localPort := src, int(ev.Sport)
+	peerAddr, peerPort := dst, int(ev.Dport)
+	if ev.EventType == eventUDPRecv {
+		dir = "recv"
+		localAddr, localPort = dst, int(ev.Dport)
+		peerAddr, peerPort = src, int(ev.Sport)
+	}
+
+	body := fmt.Sprintf("%s[%d] %s:%d -> %s:%d  UDP %s %d bytes",
+		comm, ev.Pid,
+		src, ev.Sport,
+		dst, ev.Dport,
+		dir, ev.Datalen,
+	)
+
+	var r otellog.Record
+	r.SetTimestamp(time.Unix(0, bootTimeNs+int64(ev.TimestampNs)))
+	r.SetObservedTimestamp(time.Now())
+	r.SetSeverity(otellog.SeverityInfo)
+	r.SetSeverityText("INFO")
+	r.SetBody(otellog.StringValue(body))
+	r.AddAttributes(
+		otellog.String("network.local.address", localAddr),
+		otellog.Int("network.local.port", localPort),
+		otellog.String("network.peer.address", peerAddr),
+		otellog.Int("network.peer.port", peerPort),
+		otellog.String("network.transport", "udp"),
+		otellog.String("udp.direction", dir),
+		otellog.Int("udp.datagram.size", int(ev.Datalen)),
+		otellog.Int("process.pid", int(ev.Pid)),
+		otellog.String("process.executable.name", comm),
+	)
+
+	logger.Emit(ctx, r)
+}
+
 var tcpStates = map[uint8]string{
 	1:  "TCP_ESTABLISHED",
 	2:  "TCP_SYN_SENT",
